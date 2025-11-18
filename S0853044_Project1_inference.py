@@ -40,6 +40,11 @@ TRAIN_DATA_FILE = os.path.join(path, 'train.csv')
 def read_image_labels():
     """
     """
+    if not os.path.exists(TRAIN_DATA_FILE):
+        raise FileNotFoundError(
+            f"训练数据文件不存在: {TRAIN_DATA_FILE}\n"
+            "请从Kaggle下载Plant Pathology 2021-FGVC8数据集并解压到项目目录"
+        )
     df = pd.read_csv(TRAIN_DATA_FILE).set_index('image')
     return df
 
@@ -308,21 +313,38 @@ def save_submission(model):
     """
     image_ids = pd.read_csv(os.path.join(path, 'sample_submission.csv'))
     
+    # 创建虚拟标签（多标签分类不需要真实标签）
+    dummy_labels = np.zeros((len(image_ids), 6))
+    
     dataset = PlantDataset(
         image_ids['image'], 
-        image_ids['labels'], 
+        dummy_labels, 
         transform=val_transform, 
         kind='test'
     )
     
     loader = DataLoader(dataset)
-
-    for idx, (X, _) in enumerate(loader):
-        X = X.float().to(DEVICE)
-        y_pred = torch.argmax(model(X), dim=1).detach().cpu().numpy()
-
-        pred_labels = ' '.join([CLASSES[i] for i in y_pred]).strip()
-        image_ids.iloc[idx]['labels'] = pred_labels
+    
+    model.eval()
+    predictions = []
+    with torch.no_grad():
+        for idx, (X, _) in enumerate(loader):
+            X = X.float().to(DEVICE)
+            y_pred_proba = model(X).detach().cpu().numpy()
+            
+            # 使用阈值0.4进行多标签预测
+            y_pred = (y_pred_proba > 0.4).astype(int)
+            
+            # 将多标签转换为字符串格式
+            pred_labels = []
+            for pred in y_pred:
+                labels = [CLASSES[i] for i in range(len(CLASSES)) if pred[i] == 1]
+                pred_labels.append(' '.join(labels) if labels else 'healthy')
+            
+            predictions.extend(pred_labels)
+    
+    # 更新标签
+    image_ids['labels'] = predictions
     
     # save data frame as csv
     image_ids.set_index('image', inplace=True)

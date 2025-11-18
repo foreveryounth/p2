@@ -42,6 +42,11 @@ TRAIN_DATA_FILE = os.path.join(path, 'train.csv')
 def read_image_labels():
     """
     """
+    if not os.path.exists(TRAIN_DATA_FILE):
+        raise FileNotFoundError(
+            f"训练数据文件不存在: {TRAIN_DATA_FILE}\n"
+            "请从Kaggle下载Plant Pathology 2021-FGVC8数据集并解压到项目目录"
+        )
     df = pd.read_csv(TRAIN_DATA_FILE).set_index('image')
     return df
 
@@ -124,14 +129,14 @@ folders = dict({
 def get_image(image_id, kind='train'):
     """Loads an image from file
     """
-    fname = os.path.join(Config.folders[kind], image_id)
+    fname = os.path.join(folders[kind], image_id)
     return PIL.Image.open(fname)
 data=pd.DataFrame(columns=['labels'])
 list1=[]
 for image_id, label in zip(train_df.index, train_df.labels):
     if label not in list1:
         series=pd.Series({'labels':label},name=image_id)
-        data=data.append(series)
+        data = pd.concat([data, series.to_frame().T], ignore_index=False)
         list1.append(label)
 def visualize_images(image_ids, labels, nrows=1, ncols=4, kind='train', image_transform=None):
     """
@@ -338,6 +343,7 @@ for epoch in range(first_epochs,last_epochs):
 
     model = model.train()
 
+    num_train_batches = 0
     for i, (images, labels) in enumerate(trainloader):        
         images = images.to(DEVICE)
         labels = labels.to(DEVICE)       
@@ -349,17 +355,19 @@ for epoch in range(first_epochs,last_epochs):
 
         tr_loss += loss.detach().item()
         f1score += f1(pred ,labels)
+        num_train_batches = i + 1
     
     model.eval()
-    print('Train - Epoch: %d | Loss: %.4f | F1: %.4f'%(epoch+1, tr_loss / i, f1score / i))
-    monitor.update('loss', tr_loss / i)
-    monitor.update('f1', f1score / i)
+    print('Train - Epoch: %d | Loss: %.4f | F1: %.4f'%(epoch+1, tr_loss / num_train_batches, f1score / num_train_batches))
+    monitor.update('loss', tr_loss / num_train_batches)
+    monitor.update('f1', f1score / num_train_batches)
 
     
     tr_loss = 0.0
     f1 = BinaryF1Score(threshold=0.4).to(DEVICE)
     f1score = 0
 
+    num_valid_batches = 0
     for i, (images, labels) in enumerate(validloader):        
         images = images.to(DEVICE)
         labels = labels.to(DEVICE)       
@@ -368,16 +376,25 @@ for epoch in range(first_epochs,last_epochs):
         
         tr_loss += loss.detach().item()
         f1score += f1(pred ,labels)
+        num_valid_batches = i + 1
     
     model.eval()
-    print('Valid - Epoch: %d | Loss: %.4f | F1: %.4f'%(epoch+1, tr_loss / i, f1score / i))
-    monitor.update('loss', tr_loss / i)
-    monitor.update('f1', f1score / i)
-    if f1score / i > best_f1score:
+    print('Valid - Epoch: %d | Loss: %.4f | F1: %.4f'%(epoch+1, tr_loss / num_valid_batches, f1score / num_valid_batches))
+    monitor.update('loss', tr_loss / num_valid_batches)
+    monitor.update('f1', f1score / num_valid_batches)
+    if f1score / num_valid_batches > best_f1score:
+        checkpoint = {
+            "model": model.state_dict(),
+            'optimizer': optimizer.state_dict()
+        }
         path = "./plant-pathology-2021-fgvc8/inception_v3_bestmodel/inception_v3_bestmodel_epoch{}.pth".format(epoch+1)
         torch.save(checkpoint, path)
-        best_f1score = f1score / i
+        best_f1score = f1score / num_valid_batches
     if (epoch+1) %20==0:
+        checkpoint = {
+            "model": model.state_dict(),
+            'optimizer': optimizer.state_dict()
+        }
         path = "./plant-pathology-2021-fgvc8/inception_v3_bestmodel/inception_v3_epoch{}.pth".format(epoch+1)
         torch.save(checkpoint, path)
 

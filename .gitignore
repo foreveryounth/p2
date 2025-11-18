@@ -1,0 +1,84 @@
+# 虚拟环境
+v1/
+venv/
+env/
+ENV/
+.venv/
+
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 分发/打包
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch 模型文件
+*.pth
+*.pt
+*.pkl
+*.h5
+*.ckpt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 数据集（通常很大，不应该提交）
+plant-pathology-2021-fgvc8/
+*.csv
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+
+# 日志文件
+*.log
+logs/
+
+# 操作系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# 提交文件
+submission.csv
+
+# 模型输出目录
+*/bestmodel/
+*/checkpoints/
+
