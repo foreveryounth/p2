@@ -9,6 +9,8 @@ import pandas as pd
 import PIL
 from PIL import Image
 import os
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -29,6 +31,18 @@ LR = 0.0001
 IM_SIZE = 299
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# 输出目录配置 - 统一输出到 out/ 目录
+script_dir = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_BASE_DIR = os.path.join(script_dir, 'out')
+MODELS_BEST_DIR = os.path.join(OUTPUT_BASE_DIR, 'models', 'best')
+MODELS_CHECKPOINT_DIR = os.path.join(OUTPUT_BASE_DIR, 'models', 'checkpoints')
+VISUALIZATIONS_DIR = os.path.join(OUTPUT_BASE_DIR, 'visualizations')
+
+# 创建输出目录
+os.makedirs(MODELS_BEST_DIR, exist_ok=True)
+os.makedirs(MODELS_CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(VISUALIZATIONS_DIR, exist_ok=True)
 
 path = './plant-pathology-2021-fgvc8/'
 TRAIN_DIR = path + 'train_images/'
@@ -138,8 +152,9 @@ for image_id, label in zip(train_df.index, train_df.labels):
         series=pd.Series({'labels':label},name=image_id)
         data = pd.concat([data, series.to_frame().T], ignore_index=False)
         list1.append(label)
-def visualize_images(image_ids, labels, nrows=1, ncols=4, kind='train', image_transform=None):
+def visualize_images(image_ids, labels, nrows=1, ncols=4, kind='train', image_transform=None, save_path=None):
     """
+    可视化图像并保存到文件（非交互式模式）
     """
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(20, 8))
     for image_id, label, ax in zip(image_ids, labels, axes.flatten()):
@@ -161,9 +176,16 @@ def visualize_images(image_ids, labels, nrows=1, ncols=4, kind='train', image_tr
         ax.get_yaxis().set_visible(False)
 
         del image
-        
-    plt.show()
-visualize_images(data.index, data.labels, nrows=3, ncols=4)
+    
+    # 保存图片而不是显示
+    if save_path is None:
+        save_path = os.path.join(VISUALIZATIONS_DIR, 'training_samples.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()  # 关闭图形以释放内存
+    print(f"可视化结果已保存到: {save_path}")
+
+# 只在需要时调用可视化函数（可以注释掉以跳过可视化）
+# visualize_images(data.index, data.labels, nrows=3, ncols=4, save_path='./training_samples_visualization.png')
 
 
 # In[9]:
@@ -192,9 +214,9 @@ X_Train.head()
 
 
 train_transform = A.Compose([
-            A.RandomResizedCrop(height=IM_SIZE, width=IM_SIZE),
+            A.RandomResizedCrop(size=(IM_SIZE, IM_SIZE)),
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(p=0.5),
+            A.Affine(translate_percent=0.1, scale=(0.9, 1.1), rotate=(-15, 15), p=0.5),
             A.RandomBrightnessContrast(p=0.5),
             A.Normalize(),
             ToTensorV2(),
@@ -273,7 +295,15 @@ validloader = DataLoader(validset, batch_size=BATCH, shuffle=False)
 # In[15]:
 
 
-model = torchvision.models.inception_v3(pretrained=True)
+# 兼容新旧版本的PyTorch/torchvision
+try:
+    # 新版本API (torchvision >= 0.13)
+    model = torchvision.models.inception_v3(weights=torchvision.models.Inception_V3_Weights.IMAGENET1K_V1)
+except (AttributeError, TypeError):
+    # 旧版本API (torchvision < 0.13)
+    import warnings
+    warnings.filterwarnings('ignore', category=UserWarning, message='.*pretrained.*')
+    model = torchvision.models.inception_v3(pretrained=True)
 model.aux_logits=False
 model.fc = nn.Sequential(
             nn.Linear(2048, 2048),
@@ -387,14 +417,16 @@ for epoch in range(first_epochs,last_epochs):
             "model": model.state_dict(),
             'optimizer': optimizer.state_dict()
         }
-        path = "./plant-pathology-2021-fgvc8/inception_v3_bestmodel/inception_v3_bestmodel_epoch{}.pth".format(epoch+1)
-        torch.save(checkpoint, path)
+        checkpoint_path = os.path.join(MODELS_BEST_DIR, f"inception_v3_best_epoch{epoch+1}.pth")
+        torch.save(checkpoint, checkpoint_path)
         best_f1score = f1score / num_valid_batches
+        print(f"保存最佳模型: {checkpoint_path}")
     if (epoch+1) %20==0:
         checkpoint = {
             "model": model.state_dict(),
             'optimizer': optimizer.state_dict()
         }
-        path = "./plant-pathology-2021-fgvc8/inception_v3_bestmodel/inception_v3_epoch{}.pth".format(epoch+1)
-        torch.save(checkpoint, path)
+        checkpoint_path = os.path.join(MODELS_CHECKPOINT_DIR, f"inception_v3_checkpoint_epoch{epoch+1}.pth")
+        torch.save(checkpoint, checkpoint_path)
+        print(f"保存检查点: {checkpoint_path}")
 

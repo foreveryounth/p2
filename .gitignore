@@ -82,3 +82,10 @@ submission.csv
 */bestmodel/
 */checkpoints/
 
+# Markdown 文件
+*.md
+
+# readme 文件夹
+readme/
+**/readme/
+

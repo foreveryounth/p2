@@ -1,0 +1,66 @@
+============================================================
+Inception_v3模型评估报告
+============================================================
+
+模型路径: /mnt/vstor/courses/csds465/cxz721/p2/Inception_v3/out/models/best/inception_v3_best_epoch19.pth
+评估时间: 2025-11-19 18:14:04
+使用阈值: 0.4
+最优阈值: 0.550
+
+【Kaggle官方指标】
+多标签准确率 (阈值=0.4): 0.8935
+多标签准确率 (最优阈值=0.550): 0.9058
+
+【其他指标 (阈值=0.4)】
+hamming_loss: 0.0254
+jaccard_macro: 0.8616
+jaccard_micro: 0.8695
+jaccard_samples: 0.9350
+subset_accuracy: 0.8935
+
+【各类别指标 (阈值=0.4)】
+
+rust:
+  Precision: 0.9190
+  Recall: 0.9613
+  F1 Score: 0.9396
+
+complex:
+  Precision: 0.7618
+  Recall: 0.8554
+  F1 Score: 0.8059
+
+healthy:
+  Precision: 0.9917
+  Recall: 0.9907
+  F1 Score: 0.9912
+
+powdery_mildew:
+  Precision: 0.9425
+  Recall: 0.9762
+  F1 Score: 0.9591
+
+scab:
+  Precision: 0.9335
+  Recall: 0.9469
+  F1 Score: 0.9402
+
+frog_eye_leaf_spot:
+  Precision: 0.8941
+  Recall: 0.9054
+  F1 Score: 0.8997
+
+【分类报告】
+                    precision    recall  f1-score   support
+
+              rust       0.92      0.96      0.94       413
+           complex       0.76      0.86      0.81       415
+           healthy       0.99      0.99      0.99       964
+    powdery_mildew       0.94      0.98      0.96       252
+              scab       0.93      0.95      0.94      1112
+frog_eye_leaf_spot       0.89      0.91      0.90       867
+
+         micro avg       0.92      0.94      0.93      4023
+         macro avg       0.91      0.94      0.92      4023
+      weighted avg       0.92      0.94      0.93      4023
+       samples avg       0.95      0.96      0.95      4023

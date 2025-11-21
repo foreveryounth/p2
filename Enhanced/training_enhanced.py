@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
-# HPC适配版本 - 适用于CWRU HPC集群
+# 改进的训练脚本 - 使用数据预处理和增强策略
 
-import numpy as np 
+import numpy as np
 import pandas as pd
 import PIL
 from PIL import Image
@@ -14,17 +14,31 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import f1_score
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 from typing import List, Dict
 from sklearn.model_selection import train_test_split
-from torchmetrics.classification import BinaryF1Score
+from torchmetrics.classification import F1Score
 import logging
 from datetime import datetime
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+
+# 导入工具函数
+from utils import get_enhanced_augmentations
+from metrics import multilabel_accuracy, calculate_all_metrics, print_metrics_summary
 
 # ==================== 配置日志 ====================
-# 创建日志文件，文件名包含时间戳
-log_filename = f'training_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+script_dir = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_BASE_DIR = os.path.join(script_dir, 'out')
+LOGS_DIR = os.path.join(OUTPUT_BASE_DIR, 'logs')
+MODELS_BEST_DIR = os.path.join(OUTPUT_BASE_DIR, 'models', 'best')
+MODELS_CHECKPOINT_DIR = os.path.join(OUTPUT_BASE_DIR, 'models', 'checkpoints')
+PREPROCESSING_DIR = os.path.join(OUTPUT_BASE_DIR, 'preprocessing')
+
+# 创建输出目录
+os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(MODELS_BEST_DIR, exist_ok=True)
+os.makedirs(MODELS_CHECKPOINT_DIR, exist_ok=True)
+
+log_filename = os.path.join(LOGS_DIR, f'training_enhanced_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -36,17 +50,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== 配置参数 ====================
-BATCH = 16
+BATCH = 8  # 减少批次大小以降低内存使用
 LR = 0.0001
 IM_SIZE = 299
 first_epochs = 0
-last_epochs = 20
+last_epochs = 30  # 增加训练轮数
+USE_PREPROCESSED_DATA = True  # 是否使用预处理后的数据
+USE_ENHANCED_AUG = True  # 是否使用增强的数据增强策略
+USE_LR_SCHEDULER = True  # 是否使用学习率调度器
 
-# 数据加载器配置 - 根据HPC分配的CPU核心数调整
-# SLURM会自动设置 SLURM_CPUS_PER_TASK 环境变量
+# 数据加载器配置
 num_workers = int(os.environ.get('SLURM_CPUS_PER_TASK', 4))
-if num_workers > 8:
-    num_workers = 8  # 限制最大workers数量，避免过多进程
+if num_workers > 4:
+    num_workers = 4  # 减少workers以降低内存使用
 
 # 设备配置
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -58,17 +74,16 @@ logger.info(f"PyTorch版本: {torch.__version__}")
 logger.info(f"数据加载器 workers: {num_workers}")
 
 # ==================== 路径配置 ====================
-# 优先使用环境变量，否则使用默认路径
-# 在HPC上，建议使用绝对路径
 base_dir = os.environ.get('PROJECT_DIR', os.path.expanduser('~'))
 if not os.path.isabs(base_dir):
     base_dir = os.path.abspath(base_dir)
 
-# 项目目录 - 尝试多个可能的位置
+parent_dir = os.path.dirname(script_dir)
 possible_dirs = [
+    parent_dir,
     os.path.join(base_dir, 'projects', 'plant-pathology'),
     os.path.join(base_dir, 'plant-pathology'),
-    os.path.abspath('.'),  # 当前目录
+    os.path.abspath('.'),
 ]
 
 project_dir = None
@@ -78,32 +93,37 @@ for dir_path in possible_dirs:
         break
 
 if project_dir is None:
-    project_dir = os.path.abspath('.')  # 默认使用当前目录
+    project_dir = os.path.abspath('.')
 
-# 数据路径
 data_dir = os.path.join(project_dir, 'plant-pathology-2021-fgvc8')
 if not os.path.exists(data_dir):
-    # 尝试相对路径
-    data_dir = './plant-pathology-2021-fgvc8'
+    data_dir = os.path.join(parent_dir, 'plant-pathology-2021-fgvc8')
+    if not os.path.exists(data_dir):
+        data_dir = './plant-pathology-2021-fgvc8'
 
 path = data_dir + '/' if not data_dir.endswith('/') else data_dir
 TRAIN_DIR = os.path.join(path, 'train_images')
 TEST_DIR = os.path.join(path, 'test_images')
 
-# 输出目录
-OUTPUT_DIR = os.path.join(path, 'inception_v3_bestmodel')
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 logger.info(f"项目目录: {project_dir}")
 logger.info(f"数据目录: {path}")
-logger.info(f"输出目录: {OUTPUT_DIR}")
-logger.info(f"日志文件: {log_filename}")
+logger.info(f"输出基础目录: {OUTPUT_BASE_DIR}")
 
 # ==================== 读取训练数据 ====================
-TRAIN_DATA_FILE = os.path.join(path, 'train.csv')
-
 def read_image_labels():
     """读取训练数据标签"""
+    # 优先使用预处理后的数据
+    if USE_PREPROCESSED_DATA:
+        preprocessed_file = os.path.join(PREPROCESSING_DIR, 'train_cleaned.csv')
+        if os.path.exists(preprocessed_file):
+            logger.info(f"使用预处理后的数据: {preprocessed_file}")
+            df = pd.read_csv(preprocessed_file).set_index('image')
+            return df
+        else:
+            logger.warning(f"预处理后的数据不存在: {preprocessed_file}，使用原始数据")
+    
+    # 使用原始数据
+    TRAIN_DATA_FILE = os.path.join(path, 'train.csv')
     if not os.path.exists(TRAIN_DATA_FILE):
         raise FileNotFoundError(
             f"训练数据文件不存在: {TRAIN_DATA_FILE}\n"
@@ -164,20 +184,11 @@ logger.info(f"训练集大小: {len(X_Train)}")
 logger.info(f"验证集大小: {len(X_Valid)}")
 
 # ==================== 数据增强和变换 ====================
-train_transform = A.Compose([
-    A.RandomResizedCrop(height=IM_SIZE, width=IM_SIZE),
-    A.HorizontalFlip(p=0.5),
-    A.ShiftScaleRotate(p=0.5),
-    A.RandomBrightnessContrast(p=0.5),
-    A.Normalize(),
-    ToTensorV2(),
-])
-
-val_transform = A.Compose([
-    A.Resize(height=IM_SIZE, width=IM_SIZE),
-    A.Normalize(),
-    ToTensorV2(),
-])
+logger.info(f"使用{'增强' if USE_ENHANCED_AUG else '基础'}数据增强策略")
+train_transform, val_transform = get_enhanced_augmentations(
+    im_size=IM_SIZE, 
+    use_advanced=USE_ENHANCED_AUG
+)
 
 # ==================== 数据集类 ====================
 def get_image(image_id, kind='train'):
@@ -224,7 +235,8 @@ trainloader = DataLoader(
     batch_size=BATCH, 
     shuffle=True, 
     num_workers=num_workers, 
-    pin_memory=True if torch.cuda.is_available() else False
+    pin_memory=True if torch.cuda.is_available() else False,
+    drop_last=True  # 丢弃最后一个不完整的批次，避免BatchNorm问题
 )
 
 validset = PlantDataset(X_Valid, Y_Valid, transform=val_transform, kind='val')
@@ -252,6 +264,13 @@ model = model.to(DEVICE)
 criterion = nn.BCELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
+# 学习率调度器
+if USE_LR_SCHEDULER:
+    scheduler = CosineAnnealingLR(optimizer, T_max=last_epochs, eta_min=LR * 0.01)
+    logger.info("使用余弦退火学习率调度器")
+else:
+    scheduler = None
+
 logger.info("模型创建完成")
 
 # ==================== 训练监控类 ====================
@@ -262,9 +281,11 @@ class MetricMonitor:
     def reset(self):
         self.losses = []
         self.scores = []
+        self.accuracies = []
         self.metrics = dict({
             'loss': self.losses,
-            'f1': self.scores
+            'f1': self.scores,
+            'accuracy': self.accuracies
         })
 
     def update(self, metric_name, value):
@@ -273,16 +294,26 @@ class MetricMonitor:
 monitor = MetricMonitor()
 
 # ==================== 训练循环 ====================
-best_f1score = 0
+# 使用多标签准确率作为主要指标（Kaggle官方指标）
+best_accuracy = 0
+best_f1score = 0  # 保留F1作为辅助指标
+patience = 5  # 早停耐心值
+patience_counter = 0
+
 logger.info(f"开始训练 (Epochs: {first_epochs} to {last_epochs})...")
 logger.info(f"批次大小: {BATCH}, 学习率: {LR}, 图像尺寸: {IM_SIZE}")
+logger.info(f"使用预处理数据: {USE_PREPROCESSED_DATA}")
+logger.info(f"使用增强数据增强: {USE_ENHANCED_AUG}")
+logger.info(f"使用学习率调度器: {USE_LR_SCHEDULER}")
+logger.info(f"主要评估指标: 多标签准确率 (Multilabel Accuracy) - Kaggle官方指标")
 
 for epoch in range(first_epochs, last_epochs):
     # 训练阶段
     tr_loss = 0.0
-    f1 = BinaryF1Score(threshold=0.4).to(DEVICE)
+    f1 = F1Score(num_classes=6, threshold=0.4, average='macro', multiclass=False).to(DEVICE)
     f1score = 0
-    model = model.train()
+    model.train()
+    model.aux_logits = False  # 确保训练时禁用辅助分类器
 
     num_train_batches = 0
     for i, (images, labels) in enumerate(trainloader):
@@ -295,21 +326,35 @@ for epoch in range(first_epochs, last_epochs):
         optimizer.step()
 
         tr_loss += loss.detach().item()
-        f1score += f1(pred, labels)
+        f1score += f1(pred, labels.long())
         num_train_batches = i + 1
     
     model.eval()
     train_loss = tr_loss / num_train_batches
     train_f1 = f1score / num_train_batches
-    logger.info('Train - Epoch: %d | Loss: %.4f | F1: %.4f' % (epoch+1, train_loss, train_f1))
+    
+    # 更新学习率
+    if scheduler is not None:
+        current_lr = scheduler.get_last_lr()[0]
+        scheduler.step()
+    else:
+        current_lr = LR
+    
+    logger.info('Train - Epoch: %d | Loss: %.4f | F1: %.4f | LR: %.6f' % 
+                (epoch+1, train_loss, train_f1, current_lr))
     monitor.update('loss', train_loss)
     monitor.update('f1', train_f1)
+    # 注意：训练阶段不计算准确率（太耗时），只在验证阶段计算
 
     # 验证阶段
     tr_loss = 0.0
-    f1 = BinaryF1Score(threshold=0.4).to(DEVICE)
+    f1 = F1Score(num_classes=6, threshold=0.4, average='macro', multiclass=False).to(DEVICE)
     f1score = 0
     num_valid_batches = 0
+    
+    # 收集所有预测和标签用于计算多标签准确率
+    all_preds = []
+    all_labels = []
     
     with torch.no_grad():
         for i, (images, labels) in enumerate(validloader):
@@ -319,41 +364,66 @@ for epoch in range(first_epochs, last_epochs):
             loss = criterion(pred.float(), labels.float())
             
             tr_loss += loss.detach().item()
-            f1score += f1(pred, labels)
+            f1score += f1(pred, labels.long())
             num_valid_batches = i + 1
+            
+            # 收集预测和标签
+            all_preds.append(pred.cpu())
+            all_labels.append(labels.cpu())
     
     model.eval()
     valid_loss = tr_loss / num_valid_batches
     valid_f1 = f1score / num_valid_batches
-    logger.info('Valid - Epoch: %d | Loss: %.4f | F1: %.4f' % (epoch+1, valid_loss, valid_f1))
+    
+    # 计算多标签准确率（Kaggle官方指标）
+    all_preds_tensor = torch.cat(all_preds, dim=0)
+    all_labels_tensor = torch.cat(all_labels, dim=0)
+    valid_accuracy = multilabel_accuracy(all_labels_tensor, all_preds_tensor)
+    
+    logger.info('Valid - Epoch: %d | Loss: %.4f | Accuracy: %.4f | F1: %.4f' % 
+                (epoch+1, valid_loss, valid_accuracy, valid_f1))
     monitor.update('loss', valid_loss)
     monitor.update('f1', valid_f1)
+    monitor.update('accuracy', valid_accuracy)
     
-    # 保存最佳模型
-    if valid_f1 > best_f1score:
+    # 保存最佳模型（基于多标签准确率）
+    if valid_accuracy > best_accuracy:
         checkpoint = {
             "model": model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'epoch': epoch + 1,
-            'best_f1': valid_f1.item() if hasattr(valid_f1, 'item') else float(valid_f1)
+            'best_accuracy': valid_accuracy,
+            'best_f1': valid_f1.item() if hasattr(valid_f1, 'item') else float(valid_f1),
+            'scheduler': scheduler.state_dict() if scheduler else None
         }
-        checkpoint_path = os.path.join(OUTPUT_DIR, f"inception_v3_bestmodel_epoch{epoch+1}.pth")
+        checkpoint_path = os.path.join(MODELS_BEST_DIR, f"inception_v3_enhanced_best_epoch{epoch+1}.pth")
         torch.save(checkpoint, checkpoint_path)
+        best_accuracy = valid_accuracy
         best_f1score = valid_f1.item() if hasattr(valid_f1, 'item') else float(valid_f1)
-        logger.info(f"保存最佳模型: {checkpoint_path} (F1: {best_f1score:.4f})")
+        logger.info(f"保存最佳模型: {checkpoint_path} (Accuracy: {best_accuracy:.4f}, F1: {best_f1score:.4f})")
+        patience_counter = 0
+    else:
+        patience_counter += 1
     
-    # 每20个epoch保存一次检查点
-    if (epoch+1) % 20 == 0:
+    # 早停检查
+    if patience_counter >= patience:
+        logger.info(f"验证F1分数在{patience}个epoch内未提升，提前停止训练")
+        break
+    
+    # 每10个epoch保存一次检查点
+    if (epoch+1) % 10 == 0:
         checkpoint = {
             "model": model.state_dict(),
             'optimizer': optimizer.state_dict(),
-            'epoch': epoch + 1
+            'epoch': epoch + 1,
+            'scheduler': scheduler.state_dict() if scheduler else None
         }
-        checkpoint_path = os.path.join(OUTPUT_DIR, f"inception_v3_epoch{epoch+1}.pth")
+        checkpoint_path = os.path.join(MODELS_CHECKPOINT_DIR, f"inception_v3_enhanced_checkpoint_epoch{epoch+1}.pth")
         torch.save(checkpoint, checkpoint_path)
         logger.info(f"保存检查点: {checkpoint_path}")
 
-logger.info(f"\n训练完成！最佳F1分数: {best_f1score:.4f}")
-logger.info(f"模型保存在: {OUTPUT_DIR}")
-
+logger.info(f"\n训练完成！")
+logger.info(f"最佳多标签准确率 (Kaggle官方指标): {best_accuracy:.4f}")
+logger.info(f"最佳F1分数 (辅助指标): {best_f1score:.4f}")
+logger.info(f"模型保存在: {MODELS_BEST_DIR} 和 {MODELS_CHECKPOINT_DIR}")
 

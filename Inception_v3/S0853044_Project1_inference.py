@@ -8,6 +8,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import os
+import glob
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
 
 import torch
 import torch.nn as nn
@@ -28,7 +31,35 @@ IM_SIZE = 299
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-path = './plant-pathology-2021-fgvc8/'
+# 路径配置 - 支持从子文件夹运行
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+
+# 输出目录配置 - 统一输出到 out/ 目录
+OUTPUT_BASE_DIR = os.path.join(script_dir, 'out')
+MODELS_BEST_DIR = os.path.join(OUTPUT_BASE_DIR, 'models', 'best')
+VISUALIZATIONS_DIR = os.path.join(OUTPUT_BASE_DIR, 'visualizations')
+PREDICTIONS_DIR = os.path.join(OUTPUT_BASE_DIR, 'predictions')
+
+# 创建输出目录
+os.makedirs(VISUALIZATIONS_DIR, exist_ok=True)
+os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+
+# 尝试多个可能的数据路径
+possible_paths = [
+    os.path.join(parent_dir, 'plant-pathology-2021-fgvc8'),  # 父目录（优先）
+    './plant-pathology-2021-fgvc8',  # 当前目录
+]
+
+path = None
+for p in possible_paths:
+    if os.path.exists(p):
+        path = p + '/' if not p.endswith('/') else p
+        break
+
+if path is None:
+    path = './plant-pathology-2021-fgvc8/'  # 默认路径
+
 TRAIN_DIR = path + 'train_images/'
 TEST_DIR = path + 'test_images/'
 
@@ -129,9 +160,9 @@ X_Train.head()
 
 
 train_transform = A.Compose([
-            A.RandomResizedCrop(height=IM_SIZE, width=IM_SIZE),
+            A.RandomResizedCrop(size=(IM_SIZE, IM_SIZE)),
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(p=0.5),
+            A.Affine(translate_percent=0.1, scale=(0.9, 1.1), rotate=(-15, 15), p=0.5),
             A.RandomBrightnessContrast(p=0.5),
             A.Normalize(),
             ToTensorV2(),
@@ -147,10 +178,10 @@ val_transform = A.Compose([
 
 
 folders = dict({
-        'data': "./plant-pathology-2021-fgvc8",
-        'train': './plant-pathology-2021-fgvc8/train_images',
-        'val': './plant-pathology-2021-fgvc8/train_images',
-        'test':  os.path.join("./plant-pathology-2021-fgvc8", 'test_images')
+        'data': path.rstrip('/'),
+        'train': os.path.join(path, 'train_images'),
+        'val': os.path.join(path, 'train_images'),
+        'test': os.path.join(path, 'test_images')
     })
 
 
@@ -213,7 +244,15 @@ validloader = DataLoader(validset, batch_size=BATCH, shuffle=False)
 # In[14]:
 
 
-model = torchvision.models.inception_v3(pretrained=True)
+# 兼容新旧版本的PyTorch/torchvision
+try:
+    # 新版本API (torchvision >= 0.13)
+    model = torchvision.models.inception_v3(weights=torchvision.models.Inception_V3_Weights.IMAGENET1K_V1)
+except (AttributeError, TypeError):
+    # 旧版本API (torchvision < 0.13)
+    import warnings
+    warnings.filterwarnings('ignore', category=UserWarning, message='.*pretrained.*')
+    model = torchvision.models.inception_v3(pretrained=True)
 model.aux_logits=False
 model.fc = nn.Sequential(
             nn.Linear(2048, 6),
@@ -226,8 +265,47 @@ model = model.to(DEVICE)
 # In[15]:
 
 
-checkpoint = torch.load("./plant-pathology-2021-fgvc8/inception_v3_bestmodel/inception_v3_bestmodel_epoch20.pth")
+# 加载模型 - 支持自动查找最新模型或指定模型路径
+# 模型保存在统一的输出目录 out/models/best/
+MODEL_NAME = os.environ.get('MODEL_NAME', None)  # 可以通过环境变量指定模型名
+
+if MODEL_NAME:
+    # 使用指定的模型名（支持完整路径或相对路径）
+    if os.path.isabs(MODEL_NAME) or os.path.dirname(MODEL_NAME):
+        model_path = MODEL_NAME
+    else:
+        model_path = os.path.join(MODELS_BEST_DIR, MODEL_NAME)
+else:
+    # 自动查找最新的 best 模型文件
+    model_files = glob.glob(os.path.join(MODELS_BEST_DIR, "inception_v3_best_epoch*.pth"))
+    if model_files:
+        # 按文件名排序，获取最新的
+        model_files.sort(key=lambda x: int(x.split('epoch')[-1].split('.')[0]))
+        model_path = model_files[-1]
+        print(f"自动选择模型: {os.path.basename(model_path)}")
+    else:
+        # 如果找不到，尝试旧路径（向后兼容）
+        old_model_dir = os.path.join(script_dir, 'inception_v3_bestmodel')
+        old_model_files = glob.glob(os.path.join(old_model_dir, "inception_v3_bestmodel_epoch*.pth"))
+        if old_model_files:
+            old_model_files.sort(key=lambda x: int(x.split('epoch')[-1].split('.')[0]))
+            model_path = old_model_files[-1]
+            print(f"从旧路径找到模型: {os.path.basename(model_path)}")
+        else:
+            raise FileNotFoundError(
+                f"找不到模型文件。请确保已完成训练，或通过环境变量 MODEL_NAME 指定模型路径。\n"
+                f"查找路径: {MODELS_BEST_DIR}"
+            )
+
+if not os.path.exists(model_path):
+    raise FileNotFoundError(
+        f"模型文件不存在: {model_path}\n"
+        f"请确保已完成训练，或通过环境变量 MODEL_NAME 指定模型文件名"
+    )
+
+checkpoint = torch.load(model_path)
 model.load_state_dict(checkpoint['model'])
+print(f"成功加载模型: {model_path}")
 ### now you can evaluate it
 model.eval()
 
@@ -257,9 +335,11 @@ def plot_confusion_matrix(
     y_test, 
     y_pred_proba, 
     threshold=0.4, 
-    label_names=CLASSES
+    label_names=CLASSES,
+    save_path=None
 )-> None:
     """
+    绘制混淆矩阵并保存到文件（非交互式模式）
     """
     y_pred = np.where(y_pred_proba > threshold, 1, 0)
     c_matrices = multilabel_confusion_matrix(y_test, y_pred)
@@ -274,8 +354,14 @@ def plot_confusion_matrix(
         ax.set_ylabel('True labels'); 
         ax.set_title(f'{label}');
 
-    plt.tight_layout()    
-    plt.show()
+    plt.tight_layout()
+    
+    # 保存图片而不是显示
+    if save_path is None:
+        save_path = os.path.join(VISUALIZATIONS_DIR, 'confusion_matrix.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()  # 关闭图形以释放内存
+    print(f"混淆矩阵已保存到: {save_path}")
 
 
 # In[18]:
@@ -348,7 +434,9 @@ def save_submission(model):
     
     # save data frame as csv
     image_ids.set_index('image', inplace=True)
-    image_ids.to_csv(os.path.join('./', 'submission.csv'))
+    submission_path = os.path.join(PREDICTIONS_DIR, 'submission.csv')
+    image_ids.to_csv(submission_path)
+    print(f"预测结果已保存到: {submission_path}")
     
     return image_ids
 

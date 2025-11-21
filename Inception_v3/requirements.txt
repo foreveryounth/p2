@@ -1,0 +1,41 @@
+# ============================================
+# PyTorch 和 CUDA 安装说明
+# ============================================
+# 
+# 重要：PyTorch的CUDA版本需要单独安装，不能直接通过pip install -r requirements.txt安装
+# 
+# 方法1: 安装CPU版本（默认，如果不需要GPU加速）
+# pip install torch>=1.9.0 torchvision>=0.10.0
+#
+# 方法2: 安装CUDA版本（推荐，用于GPU加速训练）
+# 访问 https://pytorch.org/get-started/locally/ 获取正确的安装命令
+# 示例（CUDA 11.8）:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# 示例（CUDA 11.7）:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu117
+# 示例（CUDA 10.2）:
+# pip install torch==1.10.2+cu102 torchvision==0.11.3+cu102 -f https://download.pytorch.org/whl/torch_stable.html
+#
+# 安装完PyTorch后，再安装其他依赖:
+# pip install -r requirements.txt --no-deps  # 跳过torch和torchvision
+# pip install numpy>=1.21.0 pandas>=1.3.0 Pillow>=8.3.0 matplotlib>=3.4.0 scikit-learn>=0.24.0 scikit-image>=0.18.0 albumentations>=1.1.0 torchmetrics>=0.6.0 seaborn>=0.11.0
+#
+# 验证CUDA是否可用:
+# python -c "import torch; print(f'CUDA可用: {torch.cuda.is_available()}'); print(f'CUDA版本: {torch.version.cuda}')"
+# ============================================
+
+# PyTorch相关（需要根据CUDA版本单独安装，见上方说明）
+# torch>=1.9.0
+# torchvision>=0.10.0
+
+# 其他依赖包
+numpy>=1.21.0
+pandas>=1.3.0
+Pillow>=8.3.0
+matplotlib>=3.4.0
+scikit-learn>=0.24.0
+scikit-image>=0.18.0
+albumentations>=1.1.0
+torchmetrics>=0.6.0
+seaborn>=0.11.0
+
